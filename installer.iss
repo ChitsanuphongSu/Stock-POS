@@ -12,7 +12,7 @@ Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
 [Files]
-Source: "SP Toys POS\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "dist\SP Toys POS\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 [Icons]
 Name: "{group}\SP Toys POS"; Filename: "{app}\SP Toys POS.exe"; IconFilename: "{app}\_internal\assets\sp-toys.ico"
 Name: "{autodesktop}\SP Toys POS"; Filename: "{app}\SP Toys POS.exe"; IconFilename: "{app}\_internal\assets\sp-toys.ico"; Tasks: desktopicon

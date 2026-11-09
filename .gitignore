@@ -5,6 +5,7 @@ __pycache__/
 venv/
 build/
 dist/
+installer-output/
 output-*/
 qa-*-data/
 backups/
