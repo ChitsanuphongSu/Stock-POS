@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+output-*/
+qa-*-data/
+backups/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.zip
+*.xlsx
+*.exe
+*.log
