@@ -96,6 +96,20 @@ def configure_label_printer(printer):
     printer.setFullPage(True)
 
 
+class ScanLineEdit(QLineEdit):
+    """Replace the previous completed scan when the next barcode starts."""
+    def __init__(self):
+        super().__init__()
+        self.replace_on_next_scan = False
+
+    def keyPressEvent(self, event):
+        if (self.replace_on_next_scan and event.text().isprintable()
+                and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)):
+            self.clear()
+            self.replace_on_next_scan = False
+        super().keyPressEvent(event)
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -144,7 +158,7 @@ class Window(QMainWindow):
 
     def build_stock(self):
         box = self.page('จัดการสต๊อก')
-        self.scan = QLineEdit(); self.scan.setPlaceholderText('สแกนบาร์โค้ดหรือพิมพ์รหัส แล้วกด Enter')
+        self.scan = ScanLineEdit(); self.scan.setPlaceholderText('สแกนบาร์โค้ดหรือพิมพ์รหัส แล้วกด Enter')
         self.scan.returnPressed.connect(self.select_barcode); box.addWidget(self.scan)
         self.photo = QLabel('ไม่มีรูปสินค้า'); self.photo.setMinimumSize(360, 270); self.photo.setMaximumHeight(300); self.photo.setAlignment(Qt.AlignCenter)
         self.photo.setStyleSheet('background:#edf5ef;border:1px solid #deeadf;border-radius:14px;color:#8ba998')
@@ -204,12 +218,17 @@ class Window(QMainWindow):
 
     def select_barcode(self):
         row = self.db.execute('SELECT * FROM products WHERE barcode=? AND active=1', (self.scan.text().strip(),)).fetchone()
-        if not row: self.selected = None; self.detail.setText('ไม่พบสินค้า'); self.category_detail.clear(); self.photo.clear(); self.photo.setText('ไม่มีรูปสินค้า'); return
+        if not row:
+            self.selected = None; self.detail.setText('ไม่พบสินค้า'); self.category_detail.clear()
+            self.photo.clear(); self.photo.setText('ไม่มีรูปสินค้า')
+            self.scan.replace_on_next_scan = True; self.scan.setFocus(); self.scan.selectAll()
+            return
         self.selected = row['id']; self.detail.setText(f"{row['name']}  ·  คงเหลือ {row['stock']} ชิ้น")
         self.category_detail.setText(f"หมวดหมู่: {row['category'] or 'ไม่ระบุ'}   |   บาร์โค้ด: {row['barcode']}")
         path = IMAGES / row['image'] if row['image'] else None
         self.photo.setPixmap(QPixmap(str(path)).scaled(355, 265, Qt.KeepAspectRatio, Qt.SmoothTransformation) if path and path.exists() else QPixmap())
         if not path or not path.exists(): self.photo.setText('ไม่มีรูปสินค้า')
+        self.scan.replace_on_next_scan = True; self.scan.setFocus(); self.scan.selectAll()
 
     def apply_stock(self, direction, reason):
         try:

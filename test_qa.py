@@ -12,6 +12,8 @@ os.environ['LOCALAPPDATA'] = _tmp.name
 
 from PIL import Image
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QDialog
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QPainter
 from PySide6.QtPrintSupport import QPrinter
@@ -100,6 +102,18 @@ class QATest(unittest.TestCase):
         self.assertIsNone(self.window.selected)
         self.window.product_name.setText('สอง'); self.window.product_barcode.setText(item['barcode']); self.window.save_product()
         self.assertEqual(self.window.db.execute('SELECT count(*) FROM products').fetchone()[0], 1)
+
+    def test_consecutive_scans_replace_previous_code(self):
+        first = self.add('สินค้าแรก')
+        self.window.product_barcode.setText('DC067315')
+        second = self.add('สินค้าถัดไป')
+        self.window.show_page(0)
+        for code, product in [(first['barcode'], first), ('DC067315', second),
+                              ('UNKNOWN', None), (first['barcode'], first)]:
+            QTest.keyClicks(self.window.scan, code)
+            QTest.keyClick(self.window.scan, Qt.Key_Return)
+            self.assertEqual(self.window.scan.text(), code)
+            self.assertEqual(self.window.selected, product['id'] if product else None)
 
     def test_image_edit_export_and_backup(self):
         image = Path(_tmp.name)/'toy.png'; Image.new('RGB',(1200,800),'#90c9a3').save(image)
