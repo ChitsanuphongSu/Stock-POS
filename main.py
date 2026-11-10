@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QRectF, QSizeF, QMarginsF
 from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QIcon, QPageSize, QPageLayout
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-    QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QSpinBox, QDoubleSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QHeaderView, QDialog, QTreeWidget, QTreeWidgetItem)
 from barcode import Code128
 from openpyxl import Workbook
@@ -32,12 +32,16 @@ def connect():
     db.executescript('''CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY, barcode TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT '', stock INTEGER NOT NULL DEFAULT 0 CHECK(stock>=0),
-      low_stock INTEGER NOT NULL DEFAULT 3, image TEXT, active INTEGER NOT NULL DEFAULT 1);
+      low_stock INTEGER NOT NULL DEFAULT 3, image TEXT, active INTEGER NOT NULL DEFAULT 1,
+      wholesale_price_satang INTEGER NOT NULL DEFAULT 0 CHECK(wholesale_price_satang>=0));
     CREATE TABLE IF NOT EXISTS movements (
       id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id),
       delta INTEGER NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
     INSERT OR IGNORE INTO settings(key,value) VALUES('next_barcode',1);''')
+    if 'wholesale_price_satang' not in {row['name'] for row in db.execute('PRAGMA table_info(products)')}:
+        with db:
+            db.execute('ALTER TABLE products ADD COLUMN wholesale_price_satang INTEGER NOT NULL DEFAULT 0 CHECK(wholesale_price_satang>=0)')
     return db
 
 
@@ -146,8 +150,8 @@ class Window(QMainWindow):
           QPushButton#nav:hover{background:#eaf4ed} QPushButton#nav[active="true"]{background:#deefe3;color:#285b3b}
           QPushButton#edit{background:#e2f0e7;color:#285b3b;padding:7px 12px;min-width:42px}
           QPushButton#edit:hover{background:#cde5d4}
-          QLineEdit,QSpinBox,QTableWidget{background:#ffffff;border:1px solid #dbe9df;border-radius:9px;padding:9px;selection-background-color:#dceee2}
-          QLineEdit:focus,QSpinBox:focus{border:2px solid #8fc3a2}
+          QLineEdit,QSpinBox,QDoubleSpinBox,QTableWidget{background:#ffffff;border:1px solid #dbe9df;border-radius:9px;padding:9px;selection-background-color:#dceee2}
+          QLineEdit:focus,QSpinBox:focus,QDoubleSpinBox:focus{border:2px solid #8fc3a2}
           QHeaderView::section{background:#eef6f0;color:#5e7a68;border:0;padding:10px;font-weight:600}
           QTableWidget{gridline-color:#edf3ee} QLabel{padding:4px}''')
 
@@ -165,23 +169,25 @@ class Window(QMainWindow):
         box.addWidget(self.photo, alignment=Qt.AlignHCenter)
         self.detail = QLabel('สแกนเพื่อเลือกสินค้า'); self.detail.setAlignment(Qt.AlignCenter); self.detail.setStyleSheet('font-size:22px;font-weight:600;color:#456c53'); box.addWidget(self.detail)
         self.category_detail = QLabel(''); self.category_detail.setAlignment(Qt.AlignCenter); self.category_detail.setStyleSheet('font-size:14px;color:#658272'); box.addWidget(self.category_detail)
+        self.price_detail = QLabel(''); self.price_detail.setAlignment(Qt.AlignCenter); self.price_detail.setStyleSheet('font-size:17px;font-weight:600;color:#306a49'); box.addWidget(self.price_detail)
         self.qty = QSpinBox(); self.qty.setRange(1, 1000000); box.addWidget(self.qty)
         actions = QHBoxLayout()
         for label, direction, reason in [('รับสินค้าเข้า', 1, 'รับเข้า'), ('ตัดสินค้าที่ขาย', -1, 'ขายหน้าร้าน')]:
             b = QPushButton(label); b.clicked.connect(lambda _, d=direction, r=reason: self.apply_stock(d, r)); actions.addWidget(b)
         box.addLayout(actions)
         adjust = QPushButton('ปรับยอดนับจริง'); adjust.clicked.connect(self.adjust); box.addWidget(adjust)
-        self.stock_table = QTableWidget(0, 4); self.stock_table.setHorizontalHeaderLabels(['บาร์โค้ด', 'สินค้า', 'หมวดหมู่', 'คงเหลือ']); self.stock_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); box.addWidget(self.stock_table)
+        self.stock_table = QTableWidget(0, 5); self.stock_table.setHorizontalHeaderLabels(['บาร์โค้ด', 'สินค้า', 'หมวดหมู่', 'ราคาขายส่ง', 'คงเหลือ']); self.stock_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); box.addWidget(self.stock_table)
 
     def build_products(self):
         box = self.page('สินค้า')
         self.product_barcode = QLineEdit(); self.product_name = QLineEdit(); self.category = QLineEdit()
         self.low = QSpinBox(); self.low.setValue(3)
+        self.wholesale_price = QDoubleSpinBox(); self.wholesale_price.setDecimals(2); self.wholesale_price.setRange(0, 999999999.99); self.wholesale_price.setSingleStep(1); self.wholesale_price.setPrefix('฿')
         self.image_file = None; self.product_id = None
         self.saved_barcode = None
         self.product_status = QLabel('กรอกข้อมูลสินค้าแล้วกดบันทึก'); self.product_status.setStyleSheet('color:#39734e;font-weight:600')
         form = QFormLayout()
-        for name, field in [('บาร์โค้ด (เว้นว่างเพื่อสร้างอัตโนมัติ)', self.product_barcode), ('ชื่อสินค้า', self.product_name), ('หมวดหมู่', self.category), ('แจ้งเตือนเมื่อเหลือ', self.low)]: form.addRow(name, field)
+        for name, field in [('บาร์โค้ด (เว้นว่างเพื่อสร้างอัตโนมัติ)', self.product_barcode), ('ชื่อสินค้า', self.product_name), ('หมวดหมู่', self.category), ('ราคาขายส่ง (บาท)', self.wholesale_price), ('แจ้งเตือนเมื่อเหลือ', self.low)]: form.addRow(name, field)
         box.addLayout(form)
         box.addWidget(QLabel('ขั้นตอน: บันทึกสินค้า → พิมพ์ฉลากแปะสินค้า → สแกนที่หน้าจัดการสต๊อก → ระบุจำนวน → ยืนยันรับเข้า'))
         buttons = QHBoxLayout()
@@ -189,7 +195,7 @@ class Window(QMainWindow):
             b = QPushButton(label); b.clicked.connect(method); buttons.addWidget(b)
         box.addLayout(buttons)
         box.addWidget(self.product_status)
-        self.product_table = QTableWidget(0, 4); self.product_table.setHorizontalHeaderLabels(['บาร์โค้ด', 'ชื่อ', 'คงเหลือ', 'แก้ไข']); self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.product_table = QTableWidget(0, 5); self.product_table.setHorizontalHeaderLabels(['บาร์โค้ด', 'ชื่อ', 'ราคาขายส่ง', 'คงเหลือ', 'แก้ไข']); self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.product_table.cellDoubleClicked.connect(self.edit_product); box.addWidget(self.product_table)
 
     def build_history(self):
@@ -219,12 +225,13 @@ class Window(QMainWindow):
     def select_barcode(self):
         row = self.db.execute('SELECT * FROM products WHERE barcode=? AND active=1', (self.scan.text().strip(),)).fetchone()
         if not row:
-            self.selected = None; self.detail.setText('ไม่พบสินค้า'); self.category_detail.clear()
+            self.selected = None; self.detail.setText('ไม่พบสินค้า'); self.category_detail.clear(); self.price_detail.clear()
             self.photo.clear(); self.photo.setText('ไม่มีรูปสินค้า')
             self.scan.replace_on_next_scan = True; self.scan.setFocus(); self.scan.selectAll()
             return
         self.selected = row['id']; self.detail.setText(f"{row['name']}  ·  คงเหลือ {row['stock']} ชิ้น")
         self.category_detail.setText(f"หมวดหมู่: {row['category'] or 'ไม่ระบุ'}   |   บาร์โค้ด: {row['barcode']}")
+        self.price_detail.setText(f"ราคาขายส่ง: ฿{row['wholesale_price_satang'] / 100:,.2f}")
         path = IMAGES / row['image'] if row['image'] else None
         self.photo.setPixmap(QPixmap(str(path)).scaled(355, 265, Qt.KeepAspectRatio, Qt.SmoothTransformation) if path and path.exists() else QPixmap())
         if not path or not path.exists(): self.photo.setText('ไม่มีรูปสินค้า')
@@ -266,15 +273,16 @@ class Window(QMainWindow):
             if not code:
                 self.generate_code()
                 code = self.product_barcode.text().strip()
+            price_satang = int(round(self.wholesale_price.value() * 100))
             with self.db:
                 if self.product_id:
-                    self.db.execute('UPDATE products SET barcode=?,name=?,category=?,low_stock=? WHERE id=?', (code,name,self.category.text(),self.low.value(),self.product_id))
+                    self.db.execute('UPDATE products SET barcode=?,name=?,category=?,low_stock=?,wholesale_price_satang=? WHERE id=?', (code,name,self.category.text(),self.low.value(),price_satang,self.product_id))
                     pid = self.product_id
                 else:
                     generated, next_number = next_barcode(self.db)
                     if code == generated:
                         self.db.execute("UPDATE settings SET value=? WHERE key='next_barcode'", (next_number,))
-                    cur = self.db.execute('INSERT INTO products(barcode,name,category,stock,low_stock) VALUES(?,?,?,?,?)', (code,name,self.category.text(),0,self.low.value()))
+                    cur = self.db.execute('INSERT INTO products(barcode,name,category,stock,low_stock,wholesale_price_satang) VALUES(?,?,?,?,?,?)', (code,name,self.category.text(),0,self.low.value(),price_satang))
                     pid = cur.lastrowid
                 if self.image_file:
                     filename = f'{pid}.jpg'
@@ -282,7 +290,7 @@ class Window(QMainWindow):
                     self.db.execute('UPDATE products SET image=? WHERE id=?', (filename,pid))
             self.saved_barcode = code
             self.product_status.setText(f'บันทึกเสร็จสิ้น · {name} · บาร์โค้ด {code}')
-            self.product_id = None; self.image_file = None; self.product_barcode.clear(); self.product_name.clear(); self.category.clear(); self.refresh()
+            self.product_id = None; self.image_file = None; self.product_barcode.clear(); self.product_name.clear(); self.category.clear(); self.wholesale_price.setValue(0); self.refresh()
             if QMessageBox.question(self, 'บันทึกสินค้าแล้ว', f'รหัส {code} บันทึกแล้ว\nต้องการพิมพ์ฉลากบาร์โค้ดตอนนี้หรือไม่?') == QMessageBox.Yes:
                 self.print_label(code)
             self.show_page(0)
@@ -292,7 +300,7 @@ class Window(QMainWindow):
     def edit_product(self, row, _):
         code = self.product_table.item(row,0).text(); item = self.db.execute('SELECT * FROM products WHERE barcode=?',(code,)).fetchone()
         if not item: return
-        self.product_id = item['id']; self.product_barcode.setText(code); self.product_name.setText(item['name']); self.category.setText(item['category']); self.low.setValue(item['low_stock'])
+        self.product_id = item['id']; self.product_barcode.setText(code); self.product_name.setText(item['name']); self.category.setText(item['category']); self.low.setValue(item['low_stock']); self.wholesale_price.setValue(item['wholesale_price_satang'] / 100)
         self.image_file = None
         self.product_status.setText(f'กำลังแก้ไข {item["name"]} · กดบันทึกเพื่อยืนยัน')
         self.show_page(1)
@@ -330,11 +338,12 @@ class Window(QMainWindow):
         rows = self.db.execute('SELECT * FROM products WHERE active=1 ORDER BY name').fetchall()
         self.stock_table.setRowCount(len(rows)); self.product_table.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            for table, values in [(self.stock_table,[r['barcode'],r['name'],r['category'],str(r['stock'])]),(self.product_table,[r['barcode'],r['name'],str(r['stock'])])]:
+            price = f"฿{r['wholesale_price_satang'] / 100:,.2f}"
+            for table, values in [(self.stock_table,[r['barcode'],r['name'],r['category'],price,str(r['stock'])]),(self.product_table,[r['barcode'],r['name'],price,str(r['stock'])])]:
                 for j, value in enumerate(values): table.setItem(i,j,QTableWidgetItem(value))
             edit = QPushButton('✎'); edit.setObjectName('edit'); edit.setToolTip(f"แก้ไข {r['name']}")
             edit.clicked.connect(lambda _, row=i: self.edit_product(row, 0))
-            self.product_table.setCellWidget(i,3,edit)
+            self.product_table.setCellWidget(i,4,edit)
         expanded = {self.history_table.topLevelItem(i).data(0, Qt.UserRole): self.history_table.topLevelItem(i).isExpanded()
                     for i in range(self.history_table.topLevelItemCount())}
         history = self.db.execute('SELECT m.created_at,p.name,m.delta,m.reason FROM movements m JOIN products p ON p.id=m.product_id ORDER BY m.created_at DESC,m.id DESC').fetchall()
@@ -360,10 +369,12 @@ class Window(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, 'ส่งออก Excel', 'SP-Toys-Stock.xlsx', 'Excel (*.xlsx)')
         if not path: return
         try:
-            book = Workbook(); stock = book.active; stock.title='สต๊อกปัจจุบัน'; stock.append(['บาร์โค้ด','สินค้า','หมวดหมู่','คงเหลือ','แจ้งเตือนเมื่อเหลือ'])
+            book = Workbook(); stock = book.active; stock.title='สต๊อกปัจจุบัน'; stock.append(['บาร์โค้ด','สินค้า','หมวดหมู่','ราคาขายส่ง (บาท)','คงเหลือ','แจ้งเตือนเมื่อเหลือ'])
             def safe(value):
                 return "'"+value if isinstance(value,str) and value.startswith(('=','+','-','@')) else value
-            for r in self.db.execute('SELECT barcode,name,category,stock,low_stock FROM products ORDER BY name'): stock.append([safe(v) for v in r])
+            for r in self.db.execute('SELECT barcode,name,category,wholesale_price_satang,stock,low_stock FROM products ORDER BY name'):
+                stock.append([safe(r['barcode']), safe(r['name']), safe(r['category']), r['wholesale_price_satang'] / 100, r['stock'], r['low_stock']])
+                stock.cell(stock.max_row, 4).number_format = '#,##0.00'
             history = book.create_sheet('ประวัติ'); history.append(['วันเวลา','บาร์โค้ด','สินค้า','จำนวน','เหตุผล'])
             for r in self.db.execute('SELECT m.created_at,p.barcode,p.name,m.delta,m.reason FROM movements m JOIN products p ON p.id=m.product_id ORDER BY m.id'): history.append([safe(v) for v in r])
             for sheet in book:

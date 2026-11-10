@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 import zipfile
@@ -87,7 +88,7 @@ class QATest(unittest.TestCase):
 
     def test_edit_button_updates_product_without_changing_stock(self):
         item=self.add()
-        self.window.product_table.cellWidget(0,3).click()
+        self.window.product_table.cellWidget(0,4).click()
         self.assertEqual(self.window.product_id,item['id'])
         self.window.product_name.setText('รถรุ่นใหม่')
         self.window.category.setText('รถ')
@@ -117,9 +118,12 @@ class QATest(unittest.TestCase):
 
     def test_image_edit_export_and_backup(self):
         image = Path(_tmp.name)/'toy.png'; Image.new('RGB',(1200,800),'#90c9a3').save(image)
-        self.window.image_file = str(image); item = self.add()
+        self.window.image_file = str(image); self.window.wholesale_price.setValue(149.75); item = self.add()
         self.assertTrue((main.IMAGES/item['image']).exists())
         self.window.scan.setText(item['barcode']); self.window.select_barcode()
+        self.assertIn('฿149.75', self.window.price_detail.text())
+        self.assertEqual(self.window.product_table.item(0, 2).text(), '฿149.75')
+        self.assertEqual(self.window.stock_table.item(0, 3).text(), '฿149.75')
         self.assertIsNotNone(self.window.photo.pixmap())
         self.assertGreater(self.window.photo.pixmap().width(), 220)
         with tempfile.TemporaryDirectory() as temp:
@@ -127,10 +131,33 @@ class QATest(unittest.TestCase):
             with patch.object(QFileDialog,'getSaveFileName',side_effect=[(str(xlsx),'Excel'),(str(backup),'ZIP')]):
                 self.window.export_xlsx(); self.window.backup()
             book=load_workbook(xlsx); self.assertEqual(book['สต๊อกปัจจุบัน']['A2'].value,item['barcode'])
+            self.assertEqual(book['สต๊อกปัจจุบัน']['D1'].value, 'ราคาขายส่ง (บาท)')
+            self.assertEqual(book['สต๊อกปัจจุบัน']['D2'].value, 149.75)
+            self.assertEqual(book['สต๊อกปัจจุบัน']['D2'].number_format, '#,##0.00')
             self.assertTrue(backup.is_file())
             with patch.object(QFileDialog,'getOpenFileName',return_value=(str(backup),'ZIP')), patch.object(QMessageBox,'question',return_value=QMessageBox.Yes):
                 self.window.restore()
             self.assertEqual(self.window.db.execute('SELECT count(*) FROM products').fetchone()[0],1)
+
+    def test_price_edit_and_legacy_database_migration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            legacy = Path(temp) / 'legacy.sqlite3'
+            db = sqlite3.connect(legacy)
+            db.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, barcode TEXT NOT NULL UNIQUE, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', stock INTEGER NOT NULL DEFAULT 0 CHECK(stock>=0), low_stock INTEGER NOT NULL DEFAULT 3, image TEXT, active INTEGER NOT NULL DEFAULT 1)")
+            db.execute("INSERT INTO products(barcode,name,stock) VALUES('OLD001','สินค้าเดิม',7)")
+            db.commit(); db.close()
+            with patch.object(main, 'DB', legacy):
+                migrated = main.connect()
+                row = migrated.execute("SELECT stock,wholesale_price_satang FROM products WHERE barcode='OLD001'").fetchone()
+                self.assertEqual((row['stock'], row['wholesale_price_satang']), (7, 0))
+                migrated.close()
+        item = self.add()
+        self.window.product_table.cellWidget(0, 4).click()
+        self.window.wholesale_price.setValue(99.90)
+        self.window.save_product()
+        updated = self.window.db.execute('SELECT * FROM products WHERE id=?', (item['id'],)).fetchone()
+        self.assertEqual(updated['wholesale_price_satang'], 9990)
+        self.assertEqual(updated['stock'], 0)
 
     def test_barcode_preview_uses_embedded_drawing(self):
         item=self.add()
